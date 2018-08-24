@@ -1,0 +1,391 @@
+<html>
+    <head>
+        <title>Repository Design Pattern</title>
+        <style type="text/css">
+            h1 {
+                text-align: center;
+            }
+            h2 {
+                text-align: center;
+            }
+            body {
+                max-width: 80%;
+                margin-left: 50px;
+                margin-right: 50px;
+            }
+            p.quote {
+                margin-left: 60px;
+                margin-right: 60px;
+                font-style: italic;
+            }
+            pre {
+                max-width: 70%;
+                margin-left: 60px;
+                margin-right: 60px;
+            }
+        </style>
+    </head>    
+    <body>
+
+        <h1>Repository Design Pattern</h1>
+        <h2>Krzychu Kosobudzki<br/>
+            <a href="https://medium.com/@krzychukosobudzki/repository-design-pattern-bc490b256006">https://medium.com/@krzychukosobudzki/repository-design-pattern-bc490b256006</a></h2>
+        <p>While developing Android applications in most of them you need to persist data in some kind of storage. In most cases this storage will be SQLite. Probably you want to access data in readable and easy way. What do you do then? Yes… you look for nice looking ORM. You can start to create classes for tables and design all possible method you’re likely to use:</p>
+
+        <pre>public interface NewsesDao {
+    void add(News news);
+    void update(News news);
+    void remove(News news);
+    News getById();
+    List&lt;News&gt; getNewest();
+    List&lt;News&gt; getAll();
+    List&lt;News&gt; getByCategory(Category category);
+    List&lt;News&gt; getNewerThan(long date);
+}</pre>
+
+        <p>Does it look familiar? Is it wrong? Well, no, but can be better.</p>
+        <p>Instead of god class (or couple of them) you can follow Single Responsibility Rule and use Repository Design Pattern instead.</p>
+        <p>Following the definition ( http://martinfowler.com/eaaCatalog/repository.html):
+        <p class="quote">A Repository mediates between the domain and data mapping layers, 
+            acting like an in-memory domain object collection. Client 
+            objects construct query specifications declaratively and submit 
+            them to Repository for satisfaction. Objects can be added to 
+            and removed from the Repository, as they can from a simple 
+            collection of objects, and the mapping code encapsulated by 
+            the Repository will carry out the appropriate operations behind 
+            the scenes</p>
+        <p>Let’s start with base definition of Repository:</p>
+
+        <pre>public interface Repository&lt;T&gt; {
+    void add(T item);
+    void update(T item);
+    void remove(T item);
+    List&lt;T&gt; query(Specification specification);
+}</pre>
+
+        <p>As you can see I replaced Criteria with Specification. Basically it’s the same, but Specification seems to be more independent from where you’re going to store the data.</p><p>While using it, I found it extremely useful to add two additional methods:</p>
+
+        <pre>public interface Repository&lt;T&gt; {
+    void add(T item);
+    void add(Iterable&lt;T&gt; items);
+    void update(T item);
+    void remove(T item);
+    void remove(Specification specification);
+    List&lt;T&gt; query(Specification specification);
+}</pre>
+
+        <p>It’s really what you need. In almost all applications you need to store more than one item and remove a couple of them. RDP should make your live easier, shouldn’t it?</p>
+
+        <p>There is also Specification interface which is only regular marker interface. Once we’ve defined what the repository is, we can start to use Specifications:</p>
+
+        <pre>public interface SqlSpecification extends Specification {
+    String toSqlQuery();
+}</pre>
+
+        <p>Basic implementation of Repository for SQLite can be for instance:</p>
+
+        <pre>public class NewsSqlRepository implements Repository&lt;News&gt; {
+    private final SQLiteOpenHelper openHelper;
+
+    private final Mapper&lt;News, ContentValues&gt; toContentValuesMapper;
+    private final Mapper&lt;Cursor, News&gt; toNewsMapper;
+
+    public NewsSqlRepository(SQLiteOpenHelper openHelper) {
+        this.openHelper = openHelper;
+
+        this.toContentValuesMapper = new NewsToContentValuesMapper();
+        this.toNewsMapper = new CursorToNewsMapper();
+    }
+
+    @Override
+    public void add(News item) {
+        add(Collections.singletonList(item));
+    }
+
+    @Override
+    public void add(Iterable&lt;News&gt; items) {
+        final SQLiteDatabase database = openHelper.getWritableDatabase();
+        database.beginTransaction();
+
+        try {
+            for (News item : items) {
+                final ContentValues contentValues = toContentValuesMapper.map(item);
+
+                database.insert(NewsTable.TABLE_NAME, null, contentValues);
+            }
+
+            database.setTransactionSuccessful();
+        } finally {
+            database.endTransaction();
+            database.close();
+        }
+    }
+
+    @Override
+    public void update(News item) {
+        // TODO to be implemented
+    }
+
+    @Override
+    public void remove(News item) {
+        // TODO to be implemented
+    }
+
+    @Override
+    public void remove(Specification specification) {
+        // TODO to be implemented
+    }
+
+    @Override
+    public List&lt;News&gt; query(Specification specification) {
+        final SqlSpecification sqlSpecification = (SqlSpecification) specification;
+
+        final SQLiteDatabase database = openHelper.getReadableDatabase();
+        final List&lt;News&gt; newses = new ArrayList&lt;&gt;();
+
+        try {
+            final Cursor cursor = database.rawQuery(sqlSpecification.toSqlQuery(), new String[]{});
+
+            for (int i = 0, size = cursor.getCount(); i &lt; size; i++) {
+                cursor.moveToPosition(i);
+
+                newses.add(toNewsMapper.map(cursor));
+            }
+
+            cursor.close();
+
+            return newses;
+        } finally {
+            database.close();
+        }
+    }
+}</pre>
+
+        <p>This can be a way simpler by using lambdas or Kotlin ?. For this example I’ve deliberately added only implementation of add and query methods 
+            because other methods will look very similar. It’s more than sure, you’ve noticed Mapper interface. Its responsibility is to map one object 
+            to another. In this case I found it really useful.</p>
+
+        <p>While using RDP, mapper classes help to keep you focused on what’s important.</p>
+
+        <pre>public interface Mapper&lt;From, To&gt; {
+    To map(From from);
+}</pre>
+
+        <p>To be able to query a database or any other storage we will need an implementation of Specification. Here it goes (couple of them, actually):</p>
+
+        <pre>public class NewestNewsesSpecification implements SqlSpecification {
+
+    @Override
+    public String toSqlQuery() {
+        return String.format(
+            "SELECT * FROM %1$s ORDER BY `%2$s` DESC;", 
+            NewsTable.TABLE_NAME, 
+            NewsTable.Fields.DATE
+        );
+    }
+}</pre>
+
+        <br/>
+
+        <pre>public class NewsByIdSpecification implements SqlSpecification {
+    private final int id;
+
+    public NewsByIdSpecification(final int id) {
+        this.id = id;
+    }
+
+    @Override
+    public String toSqlQuery() {
+        return String.format(
+            "SELECT * FROM %1$s WHERE `%2$s` = %3$d';",
+            NewsTable.TABLE_NAME,
+            NewsTable.Fields.ID,
+            id
+        );
+    }
+}</pre>
+
+        <br/>
+
+        <pre>public class NewsesByCategorySpecification implements SqlSpecification {
+    private final Category category;
+
+    public NewsesByCategorySpecification(final Category category) {
+        this.category = category;
+    }
+
+    @Override
+    public String toSqlQuery() {
+            return String.format(
+                "SELECT * FROM %1$s WHERE `%2$s` = '%3$d'",
+                NewsTable.TABLE_NAME,
+                NewsTable.Fields.CATEGORY_ID,
+                category.getId()
+        );
+    }
+}</pre>
+
+        <p>Specifications are really simple and in most cases has only one method. You can add as many Specifications as you want, without modifying DAO classes.</p>
+        <p>Moreover testing is simpler. We stick to interfaces, so it can be easily mocked and replaced. You can provide some fake data too, while mapping Repository itself.</p>
+        <p>Can you imagine how those Specification classes are easy to read comparing to veryyyy long DAO?</p>
+
+        <p>Repository fits quite good to MVP, but can be easily used in other classes too. By using Dagger you need to define which implementation of Repository you want to use in one place.</p>
+
+        <pre>public class LatestNewsesPresenter implements Presenter&lt;LatestNewsesView&gt; {
+    private final LatestNewsesView view;
+    private final Repository&lt;News&gt; repository;
+
+    public LatestNewsesPresenter(LatestNewsesView view, Repository&lt;News&gt; repository) {
+        this.view = view;
+        this.repository = repository;
+    }
+
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        final List&lt;News&gt; newses = repository.query(new NewestNewsesSpecification());
+
+        view.setNewses(newses);
+    }
+
+    @Override
+    public void onDestroy() {
+
+    }
+}</pre>
+
+        <h3>Let’s complicate it a little bit</h3>
+        <p>OK. Requirements has changed. You can no longer use SQLite. You’re cool and therefore you’ll be using Realm.</p>
+
+        <p><em>// me waiting for your yelling</em></p>
+
+        <p>What happens when you’ve implemented application by using DAOs? You have to refactor a tons of classes, even those not related to data access layer. This is not going to happen when Repository Design Pattern is your friend, though. All what you need to do is to implement Repository and Specifications to fit new requirements (let’s stick to Realm). That’s all. You will not be digging in other classes.</p>
+        <p>Take a look at brand new implementation:</p>
+        
+<pre>public class NewsRealmRepository implements Repository&lt;News&gt; {
+    private final RealmConfiguration realmConfiguration;
+
+    private final Mapper&lt;NewsRealm, News&gt; toNewsMapper;
+
+    public NewsRealmRepository(final RealmConfiguration realmConfiguration) {
+        this.realmConfiguration = realmConfiguration;
+
+        this.toNewsMapper = new NewsRealmToNewsMapper();
+    }
+
+    @Override
+    public void add(final News item) {
+        final Realm realm = Realm.getInstance(realmConfiguration);
+
+        realm.executeTransaction(new Realm.Transaction() {
+            @Override
+            public void execute(Realm realm) {
+                final NewsRealm newsRealm = realm.createObject(NewsRealm.class);
+                newsRealm.setCategory(item.getCategory());
+                newsRealm.setDate(item.getDate());
+                newsRealm.setTitle(item.getTitle());
+                newsRealm.setText(item.getText());
+            }
+        });
+
+        realm.close();
+    }
+
+    @Override
+    public void add(Iterable&lt;News&gt; items) {
+        // TODO to be implemented
+    }
+
+    @Override
+    public void update(News item) {
+        // TODO to be implemented
+    }
+
+    @Override
+    public void remove(News item) {
+        // TODO to be implemented
+    }
+
+    @Override
+    public void remove(Specification specification) {
+        // TODO to be implemented
+    }
+
+    @Override
+    public List&lt;News&gt; query(Specification specification) {
+        final RealmSpecification realmSpecification = (RealmSpecification) specification;
+
+        final Realm realm = Realm.getInstance(realmConfiguration);
+        final RealmResults&lt;NewsRealm&gt; realmResults = realmSpecification.toRealmResults(realm);
+
+        final List&lt;News&gt; newses = new ArrayList&lt;&gt;();
+
+        for (NewsRealm news : realmResults) {
+            newses.add(toNewsMapper.map(news));
+        }
+
+        realm.close();
+
+        return newses;
+    }
+}</pre>
+        
+        <p>There is a new Specification, as well:</p>
+        
+<pre>public interface RealmSpecification extends Specification {
+    RealmResults&lt;NewsRealm&gt; toRealmResults(Realm realm);
+}</pre>
+        
+        <p>And an example implementation of just created RealmSpecification:</p>
+        
+<pre>public class NewsByIdSpecification implements RealmSpecification {
+    private final int id;
+
+    public NewsByIdSpecification(final int id) {
+        this.id = id;
+    }
+
+    @Override
+    public RealmResults&lt;NewsRealm&gt; toRealmResults(Realm realm) {
+        return realm.where(NewsRealm.class)
+        .equalTo(NewsRealm.Fields.ID, id)
+        .findAll();
+    }
+}</pre>
+        
+        <p>Now, you’re ready to use Realm instead of SQLite without modifying any unrelated class (do you remember how dependency has been defined in Presenter?).</p>
+
+        <h3>Bonus</h3>
+        
+        <p>There is also one more extra use case. You can use RDP also to provide caching?—?as on the previous example, just create CacheSpecification e.g.:</p>
+        
+<pre>public interface CacheSpecification&lt;T&gt; extends Specification {
+        boolean accept(T item);
+}</pre>
+
+        <p>and use it along with others:</p>
+        
+<pre>public class NewsByIdSpecification implements RealmSpecification, CacheSpecification&lt;News&gt; {
+    private final int id;
+
+    public NewsByIdSpecification(final int id) {
+        this.id = id;
+    }
+
+    @Override
+    public RealmResults&lt;NewsRealm&gt; toRealmResults(Realm realm) {
+        return realm.where(NewsRealm.class)
+        .equalTo(NewsRealm.Fields.ID, id)
+        .findAll();
+    }
+
+    @Override
+    public boolean accept(News item) {
+        return id == item.getId();
+    }
+}</pre>
+        
+        <p>What’s important, not all of your specifications need to implement all interfaces. If only NewsByIdSpecification is used while caching, there is no need to implement CacheSpecification by NewsByCategorySpecification.</p>
+
+        <p>Your code is cleaner now, your teammates love you, kittens not gonna die, and even if you left company the next guy will not kill you, even if he’s psychopath.</p>
+    </body>
+</html>
